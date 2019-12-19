@@ -13,6 +13,8 @@ AM_CPPFLAGS = \
 	-I$(abs_top_srcdir)/nfs4 \
 	-I$(abs_top_srcdir)/portmap \
 	-I$(abs_top_srcdir)/rquota \
+	-I/home/taras/fio \
+	-D_GNU_SOURCE -DCONFIG_STRSEP \
 	"-D_U_=__attribute__((unused))"
 
 COMMON_LIBS = ../lib/libnfs.la -lpopt
