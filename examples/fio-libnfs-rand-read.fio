@@ -12,5 +12,5 @@ runtime=1
 
 [file1]
 size=4M
-ioengine=ioengine=external
+ioengine=external:.libs/libnfsclient-async.so
 iodepth=1
