@@ -1,8 +1,4 @@
-noinst_PROGRAMS = nfsclient-async nfsclient-raw nfsclient-sync nfsclient-bcast nfsclient-listservers nfs-fh nfs-io nfs-ln nfs4-cat portmap-client portmap-server
-
-if HAVE_TALLOC_TEVENT
-noinst_PROGRAMS += nfs4-cat-talloc
-endif
+lib_LTLIBRARIES = libnfsclient-async.la
 
 AM_CPPFLAGS = \
 	-I$(abs_top_srcdir)/include \
@@ -18,15 +14,6 @@ AM_CPPFLAGS = \
 	"-D_U_=__attribute__((unused))"
 
 COMMON_LIBS = ../lib/libnfs.la -lpopt
-nfsclient_async_LDADD = $(COMMON_LIBS)
-nfsclient_raw_LDADD = $(COMMON_LIBS)
-nfsclient_sync_LDADD = $(COMMON_LIBS)
-nfsclient_bcast_LDADD = $(COMMON_LIBS)
-nfsclient_listservers_LDADD = $(COMMON_LIBS)
-nfs_fh_LDADD = $(COMMON_LIBS)
-nfs_io_LDADD = $(COMMON_LIBS)
-nfs_ln_LDADD = $(COMMON_LIBS)
-nfs4_cat_LDADD = $(COMMON_LIBS) -levent
-nfs4_cat_talloc_LDADD = $(COMMON_LIBS) -ltevent -ltalloc
-portmap_client_LDADD = $(COMMON_LIBS)
-portmap_server_LDADD = $(COMMON_LIBS) -levent
+libnfsclient_async_la_LIBADD = $(COMMON_LIBS)
+libnfsclient_async_la_SOURCES = nfsclient-async.c
+libnfsclient_async_la_LDFLAGS = -shared -rdynamic -fPIC

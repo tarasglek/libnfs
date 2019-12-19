@@ -344,6 +344,7 @@ static struct fio_option options[] = {
  */
 static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 {
+	fprintf(stderr, "fio_skeleton_event\n");
 	return NULL;
 }
 
@@ -356,6 +357,7 @@ static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 				  unsigned int max, const struct timespec *t)
 {
+	fprintf(stderr, "fio_skeleton_getevents\n");
 	return 0;
 }
 
@@ -365,6 +367,8 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
  */
 static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 {
+	fprintf(stderr, "fio_skeleton_cancel\n");
+	
 	return 0;
 }
 
@@ -381,6 +385,8 @@ static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 					    struct io_u *io_u)
 {
+	fprintf(stderr, "fio_skeleton_queue\n");
+
 	/*
 	 * Double sanity check to catch errant write on a readonly setup
 	 */
@@ -402,6 +408,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
  */
 static int fio_skeleton_prep(struct thread_data *td, struct io_u *io_u)
 {
+	fprintf(stderr, "fio_skeleton_prep\n");
 	return 0;
 }
 
@@ -412,6 +419,7 @@ static int fio_skeleton_prep(struct thread_data *td, struct io_u *io_u)
  */
 static int fio_skeleton_init(struct thread_data *td)
 {
+	fprintf(stderr, "fio_skeleton_init\n");
 	return 0;
 }
 
@@ -422,6 +430,7 @@ static int fio_skeleton_init(struct thread_data *td)
  */
 static void fio_skeleton_cleanup(struct thread_data *td)
 {
+	fprintf(stderr, "fio_skeleton_cleanup\n");
 }
 
 /*
@@ -430,6 +439,7 @@ static void fio_skeleton_cleanup(struct thread_data *td)
  */
 static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 {
+	fprintf(stderr, "fio_skeleton_open\n");
 	return -1;//generic_open_file(td, f);
 }
 
@@ -438,6 +448,7 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
  */
 static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 {
+	fprintf(stderr, "fio_skeleton_close\n");
 	return -1; //generic_close_file(td, f);
 }
 
@@ -460,3 +471,5 @@ struct ioengine_ops ioengine = {
 	.options	= options,
 	.option_struct_size	= sizeof(struct fio_skeleton_options),
 };
+
+// ioengine=ioengine=external:./nfsclient-async
