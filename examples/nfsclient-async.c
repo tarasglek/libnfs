@@ -317,22 +317,25 @@ int main(int argc _U_, char *argv[] _U_)
  * something usable.
  */
 struct fio_skeleton_options {
-	void *pad; /* avoid ->off1 of fio_option becomes 0 */
-	unsigned int dummy;
+	struct nfsfh *nfsfh;
+	char *nfs_server; // nfs_server
 };
+
+static int str_server_cb(void *data, const char *input);
 
 static struct fio_option options[] = {
 	{
-		.name	= "dummy",
-		.lname	= "ldummy",
-		.type	= FIO_OPT_STR_SET,
-		.off1	= offsetof(struct fio_skeleton_options, dummy),
-		.help	= "Set dummy",
-		.category = FIO_OPT_C_ENGINE, /* always use this */
-		.group	= FIO_OPT_G_INVALID, /* this can be different */
+		.name     = "nfs_server",
+		.lname    = "nfs_server",
+		.type     = FIO_OPT_STR_STORE,
+		.help	= "NFS server hostname",
+		.off1     = offsetof(struct fio_skeleton_options, nfs_server),
+		.def	  = "localhost",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_NETIO,
 	},
 	{
-		.name	= NULL,
+		.name     = NULL,
 	},
 };
 
@@ -385,20 +388,27 @@ static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 					    struct io_u *io_u)
 {
-	fprintf(stderr, "fio_skeleton_queue\n");
+	struct nfs_context *nfs = (struct nfs_context *)io_u->file->engine_data;
+	fprintf(stderr, "fio_skeleton_queue %d\n", io_u->ddir);
 
+	switch(io_u->ddir) {
+		case DDIR_WRITE:
+
+		break;
+	}
 	/*
 	 * Double sanity check to catch errant write on a readonly setup
 	 */
 	fio_ro_check(td, io_u);
 
+	td->error = 1;
 	/*
 	 * Could return FIO_Q_QUEUED for a queued request,
 	 * FIO_Q_COMPLETED for a completed request, and FIO_Q_BUSY
 	 * if we could queue no more at this point (you'd have to
 	 * define ->commit() to handle that.
 	 */
-	return FIO_Q_COMPLETED;
+	return FIO_Q_BUSY;
 }
 
 /*
@@ -439,25 +449,61 @@ static void fio_skeleton_cleanup(struct thread_data *td)
  */
 static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 {
-	fprintf(stderr, "fio_skeleton_open\n");
-	return -1;//generic_open_file(td, f);
+	int ret;
+	struct client client;
+	struct nfs_context *nfs;
+	fprintf(stderr, "eo %p\n", td->eo);
+	struct fio_skeleton_options *o = td->eo;
+	client.server = SERVER;
+	client.export = EXPORT;
+	client.is_finished = 0;
+
+	nfs = nfs_init_context();
+	if (nfs == NULL) {
+		printf("failed to init nfs context\n");
+		return -1;
+	}
+
+	ret = nfs_mount(nfs, client.server, client.export);
+	if (ret != 0) {
+		printf("Failed to start async nfs mount\n");
+		return -1;
+	}
+
+	ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &o->nfsfh);
+	if (ret != 0) {
+		printf("Failed to open nfs file: %s\n", nfs_get_error(nfs));
+		return -1;
+	}
+
+	f->fd = nfs_get_fd(nfs);
+	f->engine_data = (void*)nfs;
+	return ret;
 }
 
 /*
- * Hook for closing a file. See fio_skeleton_open().
+ * Hook for writing out outstanding data.
+ */
+static int fio_skeleton_commit(struct thread_data *td, struct fio_file *f)
+{
+	fprintf(stderr, "fio_skeleton_commit\n");
+	return -1; //generic_close_file(td, f);
+}
+
+/*
+ * Hook for doing so. See fio_skeleton_open().
  */
 static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 {
 	fprintf(stderr, "fio_skeleton_close\n");
 	return -1; //generic_close_file(td, f);
 }
-
 /*
  * Note that the structure is exported, so that fio can get it via
  * dlsym(..., "ioengine"); for (and only for) external engines.
  */
 struct ioengine_ops ioengine = {
-	.name		= "engine_name",
+	.name		= "libnfs",
 	.version	= FIO_IOOPS_VERSION,
 	.init		= fio_skeleton_init,
 	.prep		= fio_skeleton_prep,
@@ -468,8 +514,19 @@ struct ioengine_ops ioengine = {
 	.cleanup	= fio_skeleton_cleanup,
 	.open_file	= fio_skeleton_open,
 	.close_file	= fio_skeleton_close,
+	.commit     = fio_skeleton_commit,
+	.flags      = FIO_DISKLESSIO | FIO_NOEXTEND | FIO_NODISKUTIL,
 	.options	= options,
 	.option_struct_size	= sizeof(struct fio_skeleton_options),
 };
 
 // ioengine=ioengine=external:./nfsclient-async
+
+static int str_server_cb(void *data, const char *input)
+{
+	struct fio_skeleton_options *o = data;
+
+
+	o->nfs_server = strdup(input);
+	return 0;
+}

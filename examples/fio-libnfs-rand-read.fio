@@ -3,7 +3,8 @@
 [global]
 name=fio-rand-read
 filename=fio-rand-read
-rw=randread
+; rw=randread
+rw=write
 bs=4K
 direct=0
 numjobs=1
@@ -11,6 +12,7 @@ time_based=1
 runtime=1
 
 [file1]
+nfs_server=localhost
 size=4M
 ioengine=external:.libs/libnfsclient-async.so
 iodepth=1
