@@ -318,7 +318,8 @@ int main(int argc _U_, char *argv[] _U_)
  */
 struct fio_skeleton_options {
 	struct nfsfh *nfsfh;
-	char *nfs_server; // nfs_server
+	struct nfs_context *context;	
+	char *nfs_server;
 };
 
 static int str_server_cb(void *data, const char *input);
@@ -332,7 +333,16 @@ static struct fio_option options[] = {
 		.off1     = offsetof(struct fio_skeleton_options, nfs_server),
 		.def	  = "localhost",
 		.category = FIO_OPT_C_ENGINE,
-		.group	= FIO_OPT_G_NETIO,
+		.group	= FIO_OPT_G_INVALID,
+	},
+	{
+		.name	= "hostname",
+		.lname	= "net engine hostname",
+		.type	= FIO_OPT_STR_STORE,
+		.cb	= str_server_cb,
+		.help	= "Hostname for net IO engine",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_INVALID,
 	},
 	{
 		.name     = NULL,
@@ -429,10 +439,22 @@ static int fio_skeleton_prep(struct thread_data *td, struct io_u *io_u)
  */
 static int fio_skeleton_init(struct thread_data *td)
 {
-	fprintf(stderr, "fio_skeleton_init\n");
+	fprintf(stderr, "fio_skeleton_init %p\n", td->eo);
 	return 0;
 }
 
+/*
+ * The init function is called once per thread/process, and should set up
+ * any structures that this io engine requires to keep track of io. Not
+ * required.
+ */
+static int fio_skeleton_setup(struct thread_data *td)
+{
+
+	fprintf(stderr, "fio_skeleton_setup td=%p eo=%p \n", td, td->eo);
+	td->o.use_thread = 1;
+	return 0;
+}
 /*
  * This is paired with the ->init() function and is called when a thread is
  * done doing io. Should tear down anything setup by the ->init() function.
@@ -451,14 +473,16 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 {
 	int ret;
 	struct client client;
-	struct nfs_context *nfs;
 	fprintf(stderr, "eo %p\n", td->eo);
 	struct fio_skeleton_options *o = td->eo;
+	struct nfs_context *nfs;
+
 	client.server = SERVER;
 	client.export = EXPORT;
 	client.is_finished = 0;
 
-	nfs = nfs_init_context();
+	struct fio_skeleton_options *options = malloc(sizeof(struct fio_skeleton_options));
+	options->context = nfs = nfs_init_context();
 	if (nfs == NULL) {
 		printf("failed to init nfs context\n");
 		return -1;
@@ -469,15 +493,14 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 		printf("Failed to start async nfs mount\n");
 		return -1;
 	}
-
-	ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &o->nfsfh);
+	ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &options->nfsfh);
 	if (ret != 0) {
 		printf("Failed to open nfs file: %s\n", nfs_get_error(nfs));
 		return -1;
 	}
 
 	f->fd = nfs_get_fd(nfs);
-	f->engine_data = (void*)nfs;
+	f->engine_data = options;
 	return ret;
 }
 
@@ -503,8 +526,9 @@ static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
  * dlsym(..., "ioengine"); for (and only for) external engines.
  */
 struct ioengine_ops ioengine = {
-	.name		= "libnfs",
+	.name		= "external",
 	.version	= FIO_IOOPS_VERSION,
+	.setup		= fio_skeleton_setup,
 	.init		= fio_skeleton_init,
 	.prep		= fio_skeleton_prep,
 	.queue		= fio_skeleton_queue,
@@ -525,8 +549,7 @@ struct ioengine_ops ioengine = {
 static int str_server_cb(void *data, const char *input)
 {
 	struct fio_skeleton_options *o = data;
-
-
 	o->nfs_server = strdup(input);
+	fprintf(stderr, "str_server_cb %s %p\n", input, o);
 	return 0;
 }

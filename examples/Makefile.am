@@ -16,4 +16,4 @@ AM_CPPFLAGS = \
 COMMON_LIBS = ../lib/libnfs.la -lpopt
 libnfsclient_async_la_LIBADD = $(COMMON_LIBS)
 libnfsclient_async_la_SOURCES = nfsclient-async.c
-libnfsclient_async_la_LDFLAGS = -shared -rdynamic -fPIC
+libnfsclient_async_la_LDFLAGS = -shared -rdynamic -fPIC 

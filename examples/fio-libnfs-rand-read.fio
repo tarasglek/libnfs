@@ -1,7 +1,9 @@
 ; fio-rand-read.job for fiotest
 
 [global]
+ioengine=external:.libs/libnfsclient-async.so
 name=fio-rand-read
+nfs_server=localhost
 filename=fio-rand-read
 ; rw=randread
 rw=write
@@ -12,7 +14,5 @@ time_based=1
 runtime=1
 
 [file1]
-nfs_server=localhost
 size=4M
-ioengine=external:.libs/libnfsclient-async.so
 iodepth=1
