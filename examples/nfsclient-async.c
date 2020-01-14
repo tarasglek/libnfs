@@ -149,13 +149,14 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 	int num_fds;
 	struct pollfd pfds[1]; /* nfs:0 */
 
-	pfds[0].fd = nfs_get_fd(o->context);
-	pfds[0].events = nfs_which_events(o->context);
-	num_fds = 1;
+
 	
 	// count events within callback
 	o->event_count = 0;
-	while (o->event_count < td->o.iodepth) {
+	while (o->event_count == 0) {
+		num_fds = 1;
+		pfds[0].fd = nfs_get_fd(o->context);
+		pfds[0].events = nfs_which_events(o->context);
 		int ret = poll(&pfds[0], 1, -1);
 		fprintf(stderr, "poll=%d\n", ret);
 		if (ret < 0) {
