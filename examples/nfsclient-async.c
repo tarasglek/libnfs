@@ -52,7 +52,8 @@ WSADATA wsaData;
 #include <unistd.h>
 #include <errno.h>
 #include <assert.h>
-
+#include <execinfo.h>
+#include <stdio.h>
 #include "libnfs.h"
 #include "libnfs-raw.h"
 #include "libnfs-raw-mount.h"
@@ -124,6 +125,15 @@ static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 	return io_u;
 }
 
+void my_backtrace() {
+     void* callstack[128];
+     int i, frames = backtrace(callstack, 128);
+     char** strs = backtrace_symbols(callstack, frames);
+     for (i = 0; i < frames; ++i) {
+         printf("%s\n", strs[i]);
+     }
+     free(strs);
+}
 /*
  * The ->getevents() hook is used to reap completion events from an async
  * io engine. It returns the number of completed events since the last call,
@@ -143,19 +153,23 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 	pfds[0].events = nfs_which_events(o->context);
 	num_fds = 1;
 	
-	int ret = poll(&pfds[0], 1, -1);
-	fprintf(stderr, "poll=%d\n", ret);
-	if (ret < 0) {
-		printf("Poll failed");
-		exit(10);
-	}
 	// count events within callback
 	o->event_count = 0;
-	if (nfs_service(o->context, pfds[0].revents) < 0) {
-		printf("nfs_service failed\n");
-		return 0;
+	while (o->event_count < td->o.iodepth) {
+		int ret = poll(&pfds[0], 1, -1);
+		fprintf(stderr, "poll=%d\n", ret);
+		if (ret < 0) {
+			printf("Poll failed");
+			exit(10);
+		}
+
+		if (nfs_service(o->context, pfds[0].revents) < 0) {
+			printf("nfs_service failed\n");
+			return 0;
+		}
 	}
 	fprintf(stderr, "-fio_skeleton_getevents %d\n", o->event_count);
+	// my_backtrace();
 	return o->event_count;
 }
 
@@ -170,16 +184,17 @@ static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 	return 0;
 }
 
-static void nfs_callback(int err, struct nfs_context *nfs, void *data,
+static void nfs_callback(int ret, struct nfs_context *nfs, void *data,
                        void *private_data)
 {
-	fprintf(stderr, "nfs_cb %d\n", err);
+	fprintf(stderr, "nfs_cb %d\n", ret);
 	struct io_u *io_u = private_data;
 	struct fio_skeleton_options *o = io_u->file->engine_data;
-	if (err < 0) {
+	if (ret < 0) {
 		fprintf(stderr, "Failed to write to nfs file: %s\n", nfs_get_error(o->context));
 		return;
 	}
+	io_u->resid = io_u->xfer_buflen - ret;
 	o->events[o->event_count++] = io_u;
 }
 /*
@@ -213,6 +228,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 			o->events[0] = io_u; 
 		break;
 		default:
+			fprintf(stderr,  "fio_skeleton_queue unhandled io\n");
 			assert(false);
 	}
 	/*
@@ -235,22 +251,22 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
  * with ->queue(). This hook allows the io engine to perform any
  * preparatory actions on the io_u, before being submitted. Not required.
  */
-static int fio_skeleton_prep(struct thread_data *td, struct io_u *io_u)
-{
-	fprintf(stderr, "fio_skeleton_prep\n");
-	return 0;
-}
+// static int fio_skeleton_prep(struct thread_data *td, struct io_u *io_u)
+// {
+// 	fprintf(stderr, "fio_skeleton_prep\n");
+// 	return 0;
+// }
 
 /*
  * The init function is called once per thread/process, and should set up
  * any structures that this io engine requires to keep track of io. Not
  * required.
  */
-static int fio_skeleton_init(struct thread_data *td)
-{
-	fprintf(stderr, "fio_skeleton_init %p\n", td->eo);
-	return 0;
-}
+// static int fio_skeleton_init(struct thread_data *td)
+// {
+// 	fprintf(stderr, "fio_skeleton_init %p\n", td->eo);
+// 	return 0;
+// }
 
 /*
  * The init function is called once per thread/process, and should set up
@@ -269,10 +285,10 @@ static int fio_skeleton_setup(struct thread_data *td)
  * done doing io. Should tear down anything setup by the ->init() function.
  * Not required.
  */
-static void fio_skeleton_cleanup(struct thread_data *td)
-{
-	fprintf(stderr, "fio_skeleton_cleanup\n");
-}
+// static void fio_skeleton_cleanup(struct thread_data *td)
+// {
+// 	fprintf(stderr, "fio_skeleton_cleanup\n");
+// }
 
 /*
  * Hook for opening the given file. Unless the engine has special
@@ -322,11 +338,11 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 /*
  * Hook for writing out outstanding data.
  */
-static int fio_skeleton_commit(struct thread_data *td, struct fio_file *f)
-{
-	fprintf(stderr, "fio_skeleton_commit\n");
-	return 0; //generic_close_file(td, f);
-}
+// static int fio_skeleton_commit(struct thread_data *td, struct fio_file *f)
+// {
+// 	fprintf(stderr, "fio_skeleton_commit\n");
+// 	return 0; //generic_close_file(td, f);
+// }
 
 /*
  * Hook for doing so. See fio_skeleton_open().
@@ -350,16 +366,16 @@ struct ioengine_ops ioengine = {
 	.name		= "external",
 	.version	= FIO_IOOPS_VERSION,
 	.setup		= fio_skeleton_setup,
-	.init		= fio_skeleton_init,
-	.prep		= fio_skeleton_prep,
+	// .init		= fio_skeleton_init,
+	// .prep		= fio_skeleton_prep,
 	.queue		= fio_skeleton_queue,
 	.cancel		= fio_skeleton_cancel,
 	.getevents	= fio_skeleton_getevents,
 	.event		= fio_skeleton_event,
-	.cleanup	= fio_skeleton_cleanup,
+	// .cleanup	= fio_skeleton_cleanup,
 	.open_file	= fio_skeleton_open,
 	.close_file	= fio_skeleton_close,
-	.commit     = fio_skeleton_commit,
+	// .commit     = fio_skeleton_commit,
 	.flags      = FIO_DISKLESSIO | FIO_NOEXTEND | FIO_NODISKUTIL,
 	.options	= options,
 	.option_struct_size	= sizeof(struct fio_skeleton_options),
