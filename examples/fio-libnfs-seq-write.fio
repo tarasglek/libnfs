@@ -14,8 +14,7 @@ bs=4K
 ; ;rate_iops=100000
 ; size=10000M
 
-[file2]
-filename=shared-file
-rw=write
+[file.read]
+rw=read
 iodepth=1
 size=4M

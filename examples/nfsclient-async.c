@@ -222,11 +222,12 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 	struct nfs_context *nfs = (struct nfs_context *)io_u->file->engine_data;
 	struct fio_skeleton_options *o = td->eo;
 	int err;
+	DEBUG_PRINT("fio_skeleton_queue %s @%llu size:%llu\n",
+		(io_u->ddir == DDIR_READ ? "read" : "write"),
+		io_u->offset, io_u->buflen);
 
-	// io_u->engine_data = o;
 	switch(io_u->ddir) {
 		case DDIR_WRITE:
-			DEBUG_PRINT("fio_skeleton_queue %d @%llu size:%llu\n", io_u->ddir, io_u->offset, io_u->buflen);
 			err = nfs_pwrite_async(o->context, o->nfsfh,
                            io_u->offset, io_u->buflen, io_u->buf, nfs_callback,
                            io_u);
