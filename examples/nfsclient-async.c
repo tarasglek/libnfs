@@ -189,9 +189,9 @@ static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 static void nfs_callback(int res, struct nfs_context *nfs, void *data,
                        void *private_data)
 {
-	DEBUG_PRINT("nfs_cb %d\n", res);
 	struct io_u *io_u = private_data;
 	struct fio_skeleton_options *o = io_u->file->engine_data;
+	DEBUG_PRINT("nfs_cb@%llu=%d io_u=%p\n", io_u->offset, res, io_u);
 	if (res < 0) {
 		FAIL("Failed to write to nfs file: %s\n", nfs_get_error(o->context));
 	}
@@ -311,8 +311,8 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 {
 	int ret;
 	struct client client;
-	DEBUG_PRINT("fio_skeleton_open eo=%p td->o.iodepth=%d\n", td->eo, td->o.iodepth);
-	struct fio_skeleton_options *o = td->eo;
+	DEBUG_PRINT("fio_skeleton_open(%s) eo=%p td->o.iodepth=%d\n", f->file_name,
+		td->eo, td->o.iodepth);
 	struct nfs_context *nfs;
 
 	client.server = SERVER;
@@ -325,20 +325,17 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 
 	options->context = nfs = nfs_init_context();
 	if (nfs == NULL) {
-		printf("failed to init nfs context\n");
-		return -1;
+		FAIL("failed to init nfs context\n");
 	}
 
 	ret = nfs_mount(nfs, client.server, client.export);
 	DEBUG_PRINT("nfsmount(%s, %s)\n",  client.server, client.export);
 	if (ret != 0) {
-		printf("Failed to start async nfs mount\n");
-		return -1;
+		FAIL("Failed to start async nfs mount\n");
 	}
 	ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &options->nfsfh);
 	if (ret != 0) {
-		printf("Failed to open nfs file: %s\n", nfs_get_error(nfs));
-		return -1;
+		FAIL("Failed to open nfs file: %s\n", nfs_get_error(nfs));
 	}
 
 	f->fd = nfs_get_fd(nfs);
