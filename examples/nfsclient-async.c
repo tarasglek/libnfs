@@ -42,7 +42,9 @@ WSADATA wsaData;
 #define NFSFILE "/BOOKS/Classics/Dracula.djvu"
 #define NFSDIR "/BOOKS/Classics/"
 
-#define DEBUG(...) {}
+#define DEBUG_PRINT(...) \
+	fprintf(stderr, __VA_ARGS__)
+
 #define FAIL(...) { \
 	fprintf(stderr, __VA_ARGS__); \
 	exit(1); \
@@ -127,21 +129,12 @@ static struct fio_option options[] = {
  */
 static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 {
-	DEBUG(stderr, "fio_skeleton_event %d\n", event);
+	DEBUG_PRINT("fio_skeleton_event %d\n", event);
 	struct fio_skeleton_options *o = td->eo;
 	struct io_u *io_u = o->events[event];
 	return io_u;
 }
 
-void my_backtrace() {
-     void* callstack[128];
-     int i, frames = backtrace(callstack, 128);
-     char** strs = backtrace_symbols(callstack, frames);
-     for (i = 0; i < frames; ++i) {
-         printf("%s\n", strs[i]);
-     }
-     free(strs);
-}
 /*
  * The ->getevents() hook is used to reap completion events from an async
  * io engine. It returns the number of completed events since the last call,
@@ -151,7 +144,7 @@ void my_backtrace() {
 static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 				  unsigned int max, const struct timespec *t)
 {
-	DEBUG(stderr, "+fio_skeleton_getevents\n");
+	DEBUG_PRINT("+fio_skeleton_getevents\n");
 	struct fio_skeleton_options *o = td->eo;
 
 	int num_fds;
@@ -167,18 +160,17 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 		pfds[0].fd = nfs_get_fd(o->context);
 		pfds[0].events = nfs_which_events(o->context);
 		int ret = poll(&pfds[0], 1, timeout);
-		DEBUG(stderr, "poll(timeout=%d)=%d full=%d\n", timeout, ret, o->outstanding_iops == td->o.iodepth);
+		DEBUG_PRINT("poll(timeout=%d)=%d full=%d outstanding=%d\n",
+			timeout, ret, o->outstanding_iops == td->o.iodepth,  o->outstanding_iops);
 		if (ret < 0) {
-			printf("Poll failed");
-			exit(10);
+			FAIL("Poll failed");
 		}
 
 		if (nfs_service(o->context, pfds[0].revents) < 0) {
-			printf("nfs_service failed\n");
-			return 0;
+			FAIL("nfs_service failed\n");
 		}
 	} while (o->outstanding_iops == td->o.iodepth);
-	DEBUG(stderr, "-fio_skeleton_getevents %d\n", o->event_count);
+	DEBUG_PRINT("-fio_skeleton_getevents %d\n", o->event_count);
 	// my_backtrace();
 	return o->event_count;
 }
@@ -189,7 +181,7 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
  */
 static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 {
-	DEBUG(stderr, "fio_skeleton_cancel\n");
+	DEBUG_PRINT("fio_skeleton_cancel\n");
 	
 	return 0;
 }
@@ -197,7 +189,7 @@ static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 static void nfs_callback(int res, struct nfs_context *nfs, void *data,
                        void *private_data)
 {
-	DEBUG(stderr, "nfs_cb %d\n", ret);
+	DEBUG_PRINT("nfs_cb %d\n", res);
 	struct io_u *io_u = private_data;
 	struct fio_skeleton_options *o = io_u->file->engine_data;
 	if (res < 0) {
@@ -205,6 +197,9 @@ static void nfs_callback(int res, struct nfs_context *nfs, void *data,
 	}
 	if (io_u->ddir == DDIR_READ) {
 		memcpy(io_u->buf, data, res);
+		if (res == 0) {
+			FAIL("Got EOF, this is probably not expected\n");
+		}
 	}
 	// Not sure what this resid thing is, fio does this
 	io_u->resid = io_u->xfer_buflen - res;
@@ -231,15 +226,13 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 	// io_u->engine_data = o;
 	switch(io_u->ddir) {
 		case DDIR_WRITE:
-			DEBUG(stderr, "fio_skeleton_queue %d @%llu size:%llu\n", io_u->ddir, io_u->offset, io_u->buflen);
+			DEBUG_PRINT("fio_skeleton_queue %d @%llu size:%llu\n", io_u->ddir, io_u->offset, io_u->buflen);
 			err = nfs_pwrite_async(o->context, o->nfsfh,
                            io_u->offset, io_u->buflen, io_u->buf, nfs_callback,
                            io_u);
-			o->events[o->outstanding_iops++] = io_u;
 			break;
 		case DDIR_READ:
 			err = nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
-			o->events[o->outstanding_iops++] = io_u;
 			break;
 		default:
 			FAIL("fio_skeleton_queue unhandled io\n");
@@ -249,6 +242,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 		td->error = 1;
 		return FIO_Q_COMPLETED;
 	}
+	o->outstanding_iops++;
 
 	/*
 	 * Double sanity check to catch errant write on a readonly setup
@@ -272,7 +266,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
  */
 // static int fio_skeleton_prep(struct thread_data *td, struct io_u *io_u)
 // {
-// 	DEBUG(stderr, "fio_skeleton_prep\n");
+// 	DEBUG_PRINT("fio_skeleton_prep\n");
 // 	return 0;
 // }
 
@@ -283,7 +277,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
  */
 // static int fio_skeleton_init(struct thread_data *td)
 // {
-// 	DEBUG(stderr, "fio_skeleton_init %p\n", td->eo);
+// 	DEBUG_PRINT("fio_skeleton_init %p\n", td->eo);
 // 	return 0;
 // }
 
@@ -295,7 +289,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 static int fio_skeleton_setup(struct thread_data *td)
 {
 
-	DEBUG(stderr, "fio_skeleton_setup td=%p eo=%p \n", td, td->eo);
+	DEBUG_PRINT("fio_skeleton_setup td=%p eo=%p \n", td, td->eo);
 	td->o.use_thread = 1;
 	return 0;
 }
@@ -306,7 +300,7 @@ static int fio_skeleton_setup(struct thread_data *td)
  */
 // static void fio_skeleton_cleanup(struct thread_data *td)
 // {
-// 	DEBUG(stderr, "fio_skeleton_cleanup\n");
+// 	DEBUG_PRINT("fio_skeleton_cleanup\n");
 // }
 
 /*
@@ -317,7 +311,7 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 {
 	int ret;
 	struct client client;
-	DEBUG(stderr, "fio_skeleton_open eo=%p td->o.iodepth=%d\n", td->eo, td->o.iodepth);
+	DEBUG_PRINT("fio_skeleton_open eo=%p td->o.iodepth=%d\n", td->eo, td->o.iodepth);
 	struct fio_skeleton_options *o = td->eo;
 	struct nfs_context *nfs;
 
@@ -336,7 +330,7 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 	}
 
 	ret = nfs_mount(nfs, client.server, client.export);
-	DEBUG(stderr, "nfsmount(%s, %s)\n",  client.server, client.export);
+	DEBUG_PRINT("nfsmount(%s, %s)\n",  client.server, client.export);
 	if (ret != 0) {
 		printf("Failed to start async nfs mount\n");
 		return -1;
@@ -349,7 +343,6 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 
 	f->fd = nfs_get_fd(nfs);
 	f->engine_data = options;
-	assert(!td->eo && "Some bug in fio causing ->eo member to be passed in as null");
 	td->eo = options;
 	return ret;
 }
@@ -359,7 +352,7 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
  */
 // static int fio_skeleton_commit(struct thread_data *td, struct fio_file *f)
 // {
-// 	DEBUG(stderr, "fio_skeleton_commit\n");
+// 	DEBUG_PRINT("fio_skeleton_commit\n");
 // 	return 0; //generic_close_file(td, f);
 // }
 
@@ -368,7 +361,7 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
  */
 static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 {
-	DEBUG(stderr, "fio_skeleton_close\n");
+	DEBUG_PRINT("fio_skeleton_close\n");
 	struct fio_skeleton_options *o = td->eo;
 	nfs_close(o->context, o->nfsfh);
 	nfs_umount(o->context);
@@ -406,6 +399,6 @@ static int str_server_cb(void *data, const char *input)
 {
 	struct fio_skeleton_options *o = data;
 	o->nfs_server = strdup(input);
-	DEBUG(stderr, "str_server_cb %s %p\n", input, o);
+	DEBUG_PRINT("str_server_cb %s %p\n", input, o);
 	return 0;
 }
