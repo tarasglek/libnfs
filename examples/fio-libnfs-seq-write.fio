@@ -1,0 +1,21 @@
+; fio-rand-read.job for fiotest
+
+[global]
+ioengine=external:.libs/libnfsclient-async.so
+; nfs_server=localhost
+bs=4K
+; time_based=0
+;runtime=1
+
+; [file1]
+; filename=shared-file
+; rw=randread
+; iodepth=100
+; ;rate_iops=100000
+; size=10000M
+
+[file2]
+filename=shared-file
+rw=write
+iodepth=1
+size=4M
