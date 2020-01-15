@@ -43,6 +43,10 @@ WSADATA wsaData;
 #define NFSDIR "/BOOKS/Classics/"
 
 #define DEBUG(...) {}
+#define FAIL(...) { \
+	fprintf(stderr, __VA_ARGS__); \
+	exit(1); \
+}
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,7 +87,7 @@ struct fio_skeleton_options {
 	struct nfs_context *context;	
 	char *nfs_server;
 	int event_count;
-	int outstanding_events;
+	int outstanding_iops;
 	struct io_u* events[0];
 };
 
@@ -158,12 +162,12 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 	// count events within callback
 	o->event_count = 0;
 	do {
-		int timeout = o->outstanding_events == td->o.iodepth ? -1 : 0; 
+		int timeout = o->outstanding_iops == td->o.iodepth ? -1 : 0;
 		num_fds = 1;
 		pfds[0].fd = nfs_get_fd(o->context);
 		pfds[0].events = nfs_which_events(o->context);
 		int ret = poll(&pfds[0], 1, timeout);
-		DEBUG(stderr, "poll(timeout=%d)=%d full=%d\n", timeout, ret, o->outstanding_events == td->o.iodepth);
+		DEBUG(stderr, "poll(timeout=%d)=%d full=%d\n", timeout, ret, o->outstanding_iops == td->o.iodepth);
 		if (ret < 0) {
 			printf("Poll failed");
 			exit(10);
@@ -173,7 +177,7 @@ static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 			printf("nfs_service failed\n");
 			return 0;
 		}
-	} while (o->outstanding_events == td->o.iodepth);
+	} while (o->outstanding_iops == td->o.iodepth);
 	DEBUG(stderr, "-fio_skeleton_getevents %d\n", o->event_count);
 	// my_backtrace();
 	return o->event_count;
@@ -190,19 +194,22 @@ static int fio_skeleton_cancel(struct thread_data *td, struct io_u *io_u)
 	return 0;
 }
 
-static void nfs_callback(int ret, struct nfs_context *nfs, void *data,
+static void nfs_callback(int res, struct nfs_context *nfs, void *data,
                        void *private_data)
 {
 	DEBUG(stderr, "nfs_cb %d\n", ret);
 	struct io_u *io_u = private_data;
 	struct fio_skeleton_options *o = io_u->file->engine_data;
-	if (ret < 0) {
-		DEBUG(stderr, "Failed to write to nfs file: %s\n", nfs_get_error(o->context));
-		return;
+	if (res < 0) {
+		FAIL("Failed to write to nfs file: %s\n", nfs_get_error(o->context));
 	}
-	io_u->resid = io_u->xfer_buflen - ret;
+	if (io_u->ddir == DDIR_READ) {
+		memcpy(io_u->buf, data, res);
+	}
+	// Not sure what this resid thing is, fio does this
+	io_u->resid = io_u->xfer_buflen - res;
 	o->events[o->event_count++] = io_u;
-	o->outstanding_events--;
+	o->outstanding_iops--;
 }
 /*
  * The ->queue() hook is responsible for initiating io on the io_u
@@ -219,12 +226,13 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 {
 	struct nfs_context *nfs = (struct nfs_context *)io_u->file->engine_data;
 	struct fio_skeleton_options *o = td->eo;
-	
+	int err;
+
 	// io_u->engine_data = o;
 	switch(io_u->ddir) {
 		case DDIR_WRITE:
 			DEBUG(stderr, "fio_skeleton_queue %d @%llu size:%llu\n", io_u->ddir, io_u->offset, io_u->buflen);
-			int err = nfs_pwrite_async(o->context, o->nfsfh,
+			err = nfs_pwrite_async(o->context, o->nfsfh,
                            io_u->offset, io_u->buflen, io_u->buf, nfs_callback,
                            io_u);
 			if (err) {
@@ -232,9 +240,12 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 				td->error = 1;
 				return FIO_Q_COMPLETED;
 			}
-			o->events[0] = io_u; 
-			o->outstanding_events++;
-		break;
+			o->events[o->outstanding_iops++] = io_u;
+			break;
+		case DDIR_READ:
+			nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
+			o->events[o->outstanding_iops++] = io_u;
+			break;
 		default:
 			DEBUG(stderr,  "fio_skeleton_queue unhandled io\n");
 			assert(false);
