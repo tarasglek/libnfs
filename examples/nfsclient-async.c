@@ -235,21 +235,21 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 			err = nfs_pwrite_async(o->context, o->nfsfh,
                            io_u->offset, io_u->buflen, io_u->buf, nfs_callback,
                            io_u);
-			if (err) {
-				printf("Failed to write to nfs file: %s\n", nfs_get_error(nfs));
-				td->error = 1;
-				return FIO_Q_COMPLETED;
-			}
 			o->events[o->outstanding_iops++] = io_u;
 			break;
 		case DDIR_READ:
-			nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
+			err = nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
 			o->events[o->outstanding_iops++] = io_u;
 			break;
 		default:
-			DEBUG(stderr,  "fio_skeleton_queue unhandled io\n");
-			assert(false);
+			FAIL("fio_skeleton_queue unhandled io\n");
 	}
+	if (err) {
+		fprintf(stderr, "Failed to queue nfs op: %s\n", nfs_get_error(nfs));
+		td->error = 1;
+		return FIO_Q_COMPLETED;
+	}
+
 	/*
 	 * Double sanity check to catch errant write on a readonly setup
 	 */
