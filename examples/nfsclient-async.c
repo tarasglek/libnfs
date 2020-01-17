@@ -79,9 +79,7 @@ struct client {
 
 enum nfs_op_type {
 	NFS_READ_WRITE = 0,
-	NFS_TOUCH_RM,
-	NFS_STAT_RM,
-	NFS_MKDIR_RMDIR
+	NFS_STAT_MKDIR_RMDIR,
 };
 
 /*
@@ -98,6 +96,7 @@ struct fio_skeleton_options {
 	enum nfs_op_type op_type;
 	int (*read)(struct fio_skeleton_options *o, struct io_u *io_u);
 	int (*write)(struct fio_skeleton_options *o, struct io_u *io_u);
+	int (*trim)(struct fio_skeleton_options *o, struct io_u *io_u);
 	int event_count;
 	struct io_u* events[0];
 };
@@ -144,6 +143,38 @@ static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 	return io_u;
 }
 
+static int nfs_event_loop(struct thread_data *td, bool flush) {
+	DEBUG_PRINT("+nfs_event_loop\n");
+	struct fio_skeleton_options *o = td->eo;
+
+	int num_fds;
+	struct pollfd pfds[1]; /* nfs:0 */
+
+#define SHOULD_WAIT() (o->outstanding_iops == td->o.iodepth || (flush && o->outstanding_iops))
+	
+	// count events within callback
+	o->event_count = 0;
+	do {
+		int timeout = SHOULD_WAIT() ? -1 : 0;
+		num_fds = 1;
+		pfds[0].fd = nfs_get_fd(o->context);
+		pfds[0].events = nfs_which_events(o->context);
+		int ret = poll(&pfds[0], 1, timeout);
+		DEBUG_PRINT("poll(timeout=%d)=%d full=%d outstanding=%d flush=%d\n",
+			timeout, ret, o->outstanding_iops == td->o.iodepth,  o->outstanding_iops, flush);
+		if (ret < 0) {
+			FAIL("Poll failed");
+		}
+
+		if (nfs_service(o->context, pfds[0].revents) < 0) {
+			FAIL("nfs_service failed\n");
+		}
+	} while (SHOULD_WAIT());
+	DEBUG_PRINT("-nfs_event_loop %d\n", o->event_count);
+	// my_backtrace();
+	return o->event_count;
+}
+#undef SHOULD_WAIT
 /*
  * The ->getevents() hook is used to reap completion events from an async
  * io engine. It returns the number of completed events since the last call,
@@ -153,35 +184,7 @@ static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 static int fio_skeleton_getevents(struct thread_data *td, unsigned int min,
 				  unsigned int max, const struct timespec *t)
 {
-	DEBUG_PRINT("+fio_skeleton_getevents\n");
-	struct fio_skeleton_options *o = td->eo;
-
-	int num_fds;
-	struct pollfd pfds[1]; /* nfs:0 */
-
-
-	
-	// count events within callback
-	o->event_count = 0;
-	do {
-		int timeout = o->outstanding_iops == td->o.iodepth ? -1 : 0;
-		num_fds = 1;
-		pfds[0].fd = nfs_get_fd(o->context);
-		pfds[0].events = nfs_which_events(o->context);
-		int ret = poll(&pfds[0], 1, timeout);
-		DEBUG_PRINT("poll(timeout=%d)=%d full=%d outstanding=%d\n",
-			timeout, ret, o->outstanding_iops == td->o.iodepth,  o->outstanding_iops);
-		if (ret < 0) {
-			FAIL("Poll failed");
-		}
-
-		if (nfs_service(o->context, pfds[0].revents) < 0) {
-			FAIL("nfs_service failed\n");
-		}
-	} while (o->outstanding_iops == td->o.iodepth);
-	DEBUG_PRINT("-fio_skeleton_getevents %d\n", o->event_count);
-	// my_backtrace();
-	return o->event_count;
+	return nfs_event_loop(td, false);
 }
 
 /*
@@ -202,9 +205,9 @@ static void nfs_callback(int res, struct nfs_context *nfs, void *data,
 	struct fio_skeleton_options *o = io_u->file->engine_data;
 	DEBUG_PRINT("nfs_cb@%llu=%d io_u=%p\n", io_u->offset, res, io_u);
 	if (res < 0) {
-		FAIL("Failed to write to nfs file: %s\n", nfs_get_error(o->context));
+		FAIL("Failed NFS operation: %s\n", nfs_get_error(o->context));
 	}
-	if (io_u->ddir == DDIR_READ) {
+	if (io_u->ddir == DDIR_READ && o->op_type == NFS_READ_WRITE) {
 		memcpy(io_u->buf, data, res);
 		if (res == 0) {
 			FAIL("Got EOF, this is probably not expected\n");
@@ -225,6 +228,27 @@ static int queue_write(struct fio_skeleton_options *o, struct io_u *io_u) {
 static int queue_read(struct fio_skeleton_options *o, struct io_u *io_u) {
 	return nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
 }
+
+#define NFS_FILENAME(io_u, buf) \
+	char buf[256]; \
+	sprintf(buf, "dir-%s-%llx", io_u->file->file_name, io_u->offset);
+
+static int queue_stat(struct fio_skeleton_options *o, struct io_u *io_u) {
+	NFS_FILENAME(io_u, buf)
+	return nfs_stat64_async(o->context, buf, nfs_callback, io_u);
+}
+
+static int queue_mkdir(struct fio_skeleton_options *o, struct io_u *io_u) {
+	NFS_FILENAME(io_u, buf)
+	return nfs_mkdir_async(o->context, buf, nfs_callback, io_u);
+}
+
+static int queue_rmdir(struct fio_skeleton_options *o, struct io_u *io_u) {
+	NFS_FILENAME(io_u, buf)
+	return nfs_rmdir_async(o->context, buf, nfs_callback, io_u);
+}
+
+#undef NFS_FILENAME
 /*
  * The ->queue() hook is responsible for initiating io on the io_u
  * being passed in. If the io engine is a synchronous one, io may complete
@@ -252,11 +276,14 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 		case DDIR_READ:
 			err = o->read(o, io_u);
 			break;
+		case DDIR_TRIM:
+			err = o->trim(o, io_u);
+			break;
 		default:
-			FAIL("fio_skeleton_queue unhandled io\n");
+			FAIL("fio_skeleton_queue unhandled io %d\n", io_u->ddir);
 	}
 	if (err) {
-		fprintf(stderr, "Failed to queue nfs op: %s\n", nfs_get_error(nfs));
+		FAIL("Failed to queue nfs op: %s\n", nfs_get_error(nfs));
 		td->error = 1;
 		return FIO_Q_COMPLETED;
 	}
@@ -353,16 +380,24 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 	if (ret != 0) {
 		FAIL("Failed to start async nfs mount\n");
 	}
-	ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &options->nfsfh);
-	if (ret != 0) {
-		FAIL("Failed to open nfs file: %s\n", nfs_get_error(nfs));
+	if (strstr(f->file_name, "stat_mkdir_rmdir")) {
+		// TODO move these to subdir
+		options->read = queue_stat;
+		options->write = queue_mkdir;
+		options->trim = queue_rmdir;
+		options->op_type = NFS_STAT_MKDIR_RMDIR;
+	} else {
+		ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &options->nfsfh);
+		if (ret != 0) {
+			FAIL("Failed to open nfs file: %s\n", nfs_get_error(nfs));
+		}
+		options->read = queue_read;
+		options->write = queue_write;
+		options->op_type = NFS_READ_WRITE;
 	}
-
 	f->fd = nfs_get_fd(nfs);
 	f->engine_data = options;
 	td->eo = options;
-	options->read = queue_read;
-	options->write = queue_write;
 	return ret;
 }
 
@@ -382,7 +417,9 @@ static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 {
 	DEBUG_PRINT("fio_skeleton_close\n");
 	struct fio_skeleton_options *o = td->eo;
-	nfs_close(o->context, o->nfsfh);
+	if (o->nfsfh) {
+		nfs_close(o->context, o->nfsfh);
+	}
 	nfs_umount(o->context);
 	nfs_destroy_context(o->context);
 	free(o);
@@ -392,6 +429,12 @@ static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 
 static int fio_skeleton_init(struct thread_data *td) {
 	DEBUG_PRINT("fio_skeleton_init td->eo:%p\n", td->eo);
+	return 0;
+}
+
+static int fio_skeleton_commit(struct thread_data *td) {
+	DEBUG_PRINT("fio_skeleton_commit\n");
+	//nfs_event_loop(td, true);
 	return 0;
 }
 
@@ -412,7 +455,7 @@ struct ioengine_ops ioengine = {
 	// .cleanup	= fio_skeleton_cleanup,
 	.open_file	= fio_skeleton_open,
 	.close_file	= fio_skeleton_close,
-	// .commit     = fio_skeleton_commit,
+	.commit     = fio_skeleton_commit,
 	.flags      = FIO_DISKLESSIO | FIO_NOEXTEND | FIO_NODISKUTIL,
 	.options	= options,
 	.option_struct_size	= sizeof(struct fio_skeleton_options),
