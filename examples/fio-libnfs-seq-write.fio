@@ -14,7 +14,8 @@ bs=4K
 ; ;rate_iops=100000
 ; size=10000M
 
-[file.read]
-rw=read
-iodepth=1
-size=4M
+[file.write]
+rw=randwrite
+iodepth=100
+size=9M
+; numjobs=4

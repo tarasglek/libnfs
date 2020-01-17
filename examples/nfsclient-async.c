@@ -42,8 +42,8 @@ WSADATA wsaData;
 #define NFSFILE "/BOOKS/Classics/Dracula.djvu"
 #define NFSDIR "/BOOKS/Classics/"
 
-#define DEBUG_PRINT(...) \
-	fprintf(stderr, __VA_ARGS__)
+#define DEBUG_PRINT(...) 
+	// fprintf(stderr, __VA_ARGS__)
 
 #define FAIL(...) { \
 	fprintf(stderr, __VA_ARGS__); \
@@ -75,7 +75,13 @@ struct client {
        char *export;
        uint32_t mount_port;
        struct nfsfh *nfsfh;
-       int is_finished;
+};
+
+enum nfs_op_type {
+	NFS_READ_WRITE = 0,
+	NFS_TOUCH_RM,
+	NFS_STAT_RM,
+	NFS_MKDIR_RMDIR
 };
 
 /*
@@ -88,8 +94,11 @@ struct fio_skeleton_options {
 	struct nfsfh *nfsfh;
 	struct nfs_context *context;	
 	char *nfs_server;
-	int event_count;
 	int outstanding_iops;
+	enum nfs_op_type op_type;
+	int (*read)(struct fio_skeleton_options *o, struct io_u *io_u);
+	int (*write)(struct fio_skeleton_options *o, struct io_u *io_u);
+	int event_count;
 	struct io_u* events[0];
 };
 
@@ -206,6 +215,16 @@ static void nfs_callback(int res, struct nfs_context *nfs, void *data,
 	o->events[o->event_count++] = io_u;
 	o->outstanding_iops--;
 }
+
+static int queue_write(struct fio_skeleton_options *o, struct io_u *io_u) {
+	return nfs_pwrite_async(o->context, o->nfsfh,
+                           io_u->offset, io_u->buflen, io_u->buf, nfs_callback,
+                           io_u);
+}
+
+static int queue_read(struct fio_skeleton_options *o, struct io_u *io_u) {
+	return nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
+}
 /*
  * The ->queue() hook is responsible for initiating io on the io_u
  * being passed in. If the io engine is a synchronous one, io may complete
@@ -228,12 +247,10 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 
 	switch(io_u->ddir) {
 		case DDIR_WRITE:
-			err = nfs_pwrite_async(o->context, o->nfsfh,
-                           io_u->offset, io_u->buflen, io_u->buf, nfs_callback,
-                           io_u);
+			err = o->write(o, io_u);
 			break;
 		case DDIR_READ:
-			err = nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
+			err = o->read(o, io_u);
 			break;
 		default:
 			FAIL("fio_skeleton_queue unhandled io\n");
@@ -316,9 +333,11 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 		td->eo, td->o.iodepth);
 	struct nfs_context *nfs;
 
-	client.server = SERVER;
-	client.export = EXPORT;
-	client.is_finished = 0;
+	client.server = getenv("NFS_SERVER");
+	client.export = getenv("EXPORT");
+	if (!client.server || !client.export) {
+		FAIL("Must set env vars: NFS_SERVER, EXPORT\n");
+	}
 
 	unsigned long option_size = sizeof(struct fio_skeleton_options) + sizeof(struct io_u **) * td->o.iodepth;
 	struct fio_skeleton_options *options = malloc(option_size);
@@ -342,6 +361,8 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 	f->fd = nfs_get_fd(nfs);
 	f->engine_data = options;
 	td->eo = options;
+	options->read = queue_read;
+	options->write = queue_write;
 	return ret;
 }
 
@@ -368,6 +389,12 @@ static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 	td->eo = NULL;
 	return generic_close_file(td, f);
 }
+
+static int fio_skeleton_init(struct thread_data *td) {
+	DEBUG_PRINT("fio_skeleton_init td->eo:%p\n", td->eo);
+	return 0;
+}
+
 /*
  * Note that the structure is exported, so that fio can get it via
  * dlsym(..., "ioengine"); for (and only for) external engines.
@@ -376,7 +403,7 @@ struct ioengine_ops ioengine = {
 	.name		= "external",
 	.version	= FIO_IOOPS_VERSION,
 	.setup		= fio_skeleton_setup,
-	// .init		= fio_skeleton_init,
+	.init		= fio_skeleton_init,
 	// .prep		= fio_skeleton_prep,
 	.queue		= fio_skeleton_queue,
 	.cancel		= fio_skeleton_cancel,
