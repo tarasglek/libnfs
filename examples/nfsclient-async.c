@@ -42,8 +42,13 @@ WSADATA wsaData;
 #define NFSFILE "/BOOKS/Classics/Dracula.djvu"
 #define NFSDIR "/BOOKS/Classics/"
 
+#if 1
+#define DEBUG_PRINT(...) \
+	fprintf(stderr, __VA_ARGS__)
+
+#else 
 #define DEBUG_PRINT(...) 
-	// fprintf(stderr, __VA_ARGS__)
+#endif
 
 #define FAIL(...) { \
 	fprintf(stderr, __VA_ARGS__); \
@@ -92,12 +97,16 @@ struct fio_skeleton_options {
 	struct nfsfh *nfsfh;
 	struct nfs_context *context;	
 	char *nfs_server;
-	int outstanding_iops;
 	enum nfs_op_type op_type;
 	int (*read)(struct fio_skeleton_options *o, struct io_u *io_u);
 	int (*write)(struct fio_skeleton_options *o, struct io_u *io_u);
 	int (*trim)(struct fio_skeleton_options *o, struct io_u *io_u);
-	int event_count;
+	int outstanding_events; // IOs issued to libnfs, that have not returned yet
+	int prev_requested_event_index; // event last returned via fio_skeleton_event
+	int next_buffered_event; // round robin-pointer within events[] 
+	int buffered_event_count; // IOs completed by libnfs faiting for FIO
+	int free_event_buffer_index; // next empty buffer
+	unsigned int queue_depth; // nfs_callback needs this info, but doesn't have fio td structure to pull it from
 	struct io_u* events[0];
 };
 
@@ -139,29 +148,46 @@ static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 {
 	DEBUG_PRINT("fio_skeleton_event %d\n", event);
 	struct fio_skeleton_options *o = td->eo;
-	struct io_u *io_u = o->events[event];
+	struct io_u *io_u = o->events[o->next_buffered_event];
+	assert(o->events[o->next_buffered_event]);
+	o->events[o->next_buffered_event] = NULL;
+	o->next_buffered_event = (o->next_buffered_event + 1) % td->o.iodepth;
+	// validate our state machine
+	assert(o->buffered_event_count);
+	o->buffered_event_count--;
+	assert(io_u);
+	// we need to assert that fio_skeleton_event is being called in sequential fashion
+	DEBUG_PRINT("before o->prev_requested_event_index:%d event:%d\n", o->prev_requested_event_index, event);
+	assert(event == 0 || o->prev_requested_event_index + 1 == event);
+	if (o->buffered_event_count == 0) {
+		o->prev_requested_event_index = -1;
+	} else {
+		o->prev_requested_event_index = event;
+	}
+	DEBUG_PRINT("after o->prev_requested_event_index:%d event:%d\n", o->prev_requested_event_index, event);
+
 	return io_u;
 }
 
 static int nfs_event_loop(struct thread_data *td, bool flush) {
 	DEBUG_PRINT("+nfs_event_loop\n");
 	struct fio_skeleton_options *o = td->eo;
-
-	int num_fds;
+	if (!o->outstanding_events) {
+		DEBUG_PRINT("why flush on empty?\n");
+		return o->buffered_event_count;
+	}
+	
 	struct pollfd pfds[1]; /* nfs:0 */
 
-#define SHOULD_WAIT() (o->outstanding_iops == td->o.iodepth || (flush && o->outstanding_iops))
+#define SHOULD_WAIT() (o->outstanding_events == td->o.iodepth || (flush && o->outstanding_events))
 	
-	// count events within callback
-	o->event_count = 0;
 	do {
 		int timeout = SHOULD_WAIT() ? -1 : 0;
-		num_fds = 1;
 		pfds[0].fd = nfs_get_fd(o->context);
 		pfds[0].events = nfs_which_events(o->context);
 		int ret = poll(&pfds[0], 1, timeout);
 		DEBUG_PRINT("poll(timeout=%d)=%d full=%d outstanding=%d flush=%d\n",
-			timeout, ret, o->outstanding_iops == td->o.iodepth,  o->outstanding_iops, flush);
+			timeout, ret, o->outstanding_events == td->o.iodepth,  o->outstanding_events, flush);
 		if (ret < 0) {
 			FAIL("Poll failed");
 		}
@@ -170,9 +196,9 @@ static int nfs_event_loop(struct thread_data *td, bool flush) {
 			FAIL("nfs_service failed\n");
 		}
 	} while (SHOULD_WAIT());
-	DEBUG_PRINT("-nfs_event_loop %d\n", o->event_count);
+	DEBUG_PRINT("-nfs_event_loop %d\n", o->buffered_event_count);
 	// my_backtrace();
-	return o->event_count;
+	return o->buffered_event_count;
 }
 #undef SHOULD_WAIT
 /*
@@ -215,8 +241,12 @@ static void nfs_callback(int res, struct nfs_context *nfs, void *data,
 	}
 	// Not sure what this resid thing is, fio does this
 	io_u->resid = io_u->xfer_buflen - res;
-	o->events[o->event_count++] = io_u;
-	o->outstanding_iops--;
+
+	assert(!o->events[o->free_event_buffer_index]);
+	o->events[o->free_event_buffer_index] = io_u;
+	o->free_event_buffer_index = (o->free_event_buffer_index + 1) % o->queue_depth;
+	o->outstanding_events--;
+	o->buffered_event_count++;
 }
 
 static int queue_write(struct fio_skeleton_options *o, struct io_u *io_u) {
@@ -287,7 +317,7 @@ static enum fio_q_status fio_skeleton_queue(struct thread_data *td,
 		td->error = 1;
 		return FIO_Q_COMPLETED;
 	}
-	o->outstanding_iops++;
+	o->outstanding_events++;
 
 	/*
 	 * Double sanity check to catch errant write on a readonly setup
@@ -361,14 +391,16 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 	struct nfs_context *nfs;
 
 	client.server = getenv("NFS_SERVER");
-	client.export = getenv("EXPORT");
+	client.export = getenv("NFS_EXPORT");
 	if (!client.server || !client.export) {
-		FAIL("Must set env vars: NFS_SERVER, EXPORT\n");
+		FAIL("Must set env vars: NFS_SERVER, NFS_EXPORT\n");
 	}
 
 	unsigned long option_size = sizeof(struct fio_skeleton_options) + sizeof(struct io_u **) * td->o.iodepth;
 	struct fio_skeleton_options *options = malloc(option_size);
 	memset(options, 0, option_size);
+	options->prev_requested_event_index = -1;
+	options->queue_depth = td->o.iodepth;
 
 	options->context = nfs = nfs_init_context();
 	if (nfs == NULL) {
@@ -402,29 +434,23 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 }
 
 /*
- * Hook for writing out outstanding data.
- */
-// static int fio_skeleton_commit(struct thread_data *td, struct fio_file *f)
-// {
-// 	DEBUG_PRINT("fio_skeleton_commit\n");
-// 	return 0; //generic_close_file(td, f);
-// }
-
-/*
  * Hook for doing so. See fio_skeleton_open().
  */
 static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 {
 	DEBUG_PRINT("fio_skeleton_close\n");
 	struct fio_skeleton_options *o = td->eo;
+	int ret = 0;
 	if (o->nfsfh) {
-		nfs_close(o->context, o->nfsfh);
+		ret = nfs_close(o->context, o->nfsfh);
+		ret = generic_close_file(td, f);
 	}
 	nfs_umount(o->context);
 	nfs_destroy_context(o->context);
 	free(o);
 	td->eo = NULL;
-	return generic_close_file(td, f);
+	f->fd = -1;
+	return ret;
 }
 
 static int fio_skeleton_init(struct thread_data *td) {
@@ -432,9 +458,12 @@ static int fio_skeleton_init(struct thread_data *td) {
 	return 0;
 }
 
+/*
+ * Hook for writing out outstanding data.
+ */
 static int fio_skeleton_commit(struct thread_data *td) {
 	DEBUG_PRINT("fio_skeleton_commit\n");
-	//nfs_event_loop(td, true);
+	nfs_event_loop(td, true);
 	return 0;
 }
 
