@@ -260,9 +260,10 @@ static int queue_read(struct fio_skeleton_options *o, struct io_u *io_u) {
 	return nfs_pread_async(o->context, o->nfsfh, io_u->offset, io_u->buflen, nfs_callback,  io_u);
 }
 
+// todo: reverse numbers to improve name distribution
 #define NFS_FILENAME(io_u, buf) \
 	char buf[256]; \
-	sprintf(buf, "dir-%s-%llx", io_u->file->file_name, io_u->offset);
+	sprintf(buf, "%s/%llx", io_u->file->file_name, io_u->offset);
 
 static int queue_stat(struct fio_skeleton_options *o, struct io_u *io_u) {
 	NFS_FILENAME(io_u, buf)
@@ -419,6 +420,10 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 		options->write = queue_mkdir;
 		options->trim = queue_rmdir;
 		options->op_type = NFS_STAT_MKDIR_RMDIR;
+		ret = nfs_mkdir(nfs, f->file_name);
+		if (ret != 0) {
+			FAIL("Failed to mkdir: %s\n", nfs_get_error(nfs));
+		}
 	} else {
 		ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &options->nfsfh);
 		if (ret != 0) {
