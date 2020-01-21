@@ -42,7 +42,7 @@ WSADATA wsaData;
 #define NFSFILE "/BOOKS/Classics/Dracula.djvu"
 #define NFSDIR "/BOOKS/Classics/"
 
-#if 1
+#if 0
 #define DEBUG_PRINT(...) \
 	fprintf(stderr, __VA_ARGS__)
 
@@ -170,10 +170,11 @@ static struct io_u *fio_skeleton_event(struct thread_data *td, int event)
 }
 
 static int nfs_event_loop(struct thread_data *td, bool flush) {
-	DEBUG_PRINT("+nfs_event_loop\n");
 	struct fio_skeleton_options *o = td->eo;
-	if (!o->outstanding_events) {
-		DEBUG_PRINT("why flush on empty?\n");
+	DEBUG_PRINT("+nfs_event_loop o->buffered_event_count:%d\n", o->buffered_event_count);
+	// we already have stuff queued for fio, no need to waste cpu on poll()
+	if (o->buffered_event_count) {
+		DEBUG_PRINT("why bother me?\n");
 		return o->buffered_event_count;
 	}
 	
@@ -239,8 +240,8 @@ static void nfs_callback(int res, struct nfs_context *nfs, void *data,
 			FAIL("Got EOF, this is probably not expected\n");
 		}
 	}
-	// Not sure what this resid thing is, fio does this
-	io_u->resid = io_u->xfer_buflen - res;
+	// I guess fio uses resid to track remaining data
+	io_u->resid =  o->op_type == NFS_READ_WRITE ? (io_u->xfer_buflen - res) : 0;
 
 	assert(!o->events[o->free_event_buffer_index]);
 	o->events[o->free_event_buffer_index] = io_u;
