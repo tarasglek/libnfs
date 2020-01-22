@@ -1,0 +1,10 @@
+; NUM_JOBS=400 BLOCK_SIZE=512K fio fb-write.fio -o report.write.$BLOCK_SIZE
+[file]
+ioengine=external:.libs/libnfsclient-async.so
+bs=${BLOCK_SIZE}
+time_based=1
+runtime=10s
+rw=randread
+iodepth=1
+size=100M
+numjobs=${NUM_JOBS}

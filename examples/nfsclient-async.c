@@ -425,7 +425,14 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 			FAIL("Failed to mkdir: %s\n", nfs_get_error(nfs));
 		}
 	} else {
-		ret = nfs_open(nfs, f->file_name, O_CREAT | O_WRONLY | O_TRUNC, &options->nfsfh);
+		int flags = 0;
+		if (td->o.td_ddir == TD_DDIR_WRITE) {
+			DEBUG_PRINT("O_CREAT\n");
+			flags |= O_CREAT | O_RDWR;
+		} else {
+			flags |= O_RDONLY;
+		}
+		ret = nfs_open(nfs, f->file_name, flags, &options->nfsfh);
 		if (ret != 0) {
 			FAIL("Failed to open nfs file: %s\n", nfs_get_error(nfs));
 		}
