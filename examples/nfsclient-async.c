@@ -420,9 +420,11 @@ static int fio_skeleton_open(struct thread_data *td, struct fio_file *f)
 		options->write = queue_mkdir;
 		options->trim = queue_rmdir;
 		options->op_type = NFS_STAT_MKDIR_RMDIR;
-		ret = nfs_mkdir(nfs, f->file_name);
-		if (ret != 0) {
-			FAIL("Failed to mkdir: %s\n", nfs_get_error(nfs));
+		if (td->o.td_ddir == TD_DDIR_WRITE) {
+			ret = nfs_mkdir(nfs, f->file_name);
+			if (ret != 0) {
+				FAIL("Failed to mkdir: %s\n", nfs_get_error(nfs));
+			}
 		}
 	} else {
 		int flags = 0;
@@ -454,6 +456,14 @@ static int fio_skeleton_close(struct thread_data *td, struct fio_file *f)
 	DEBUG_PRINT("fio_skeleton_close\n");
 	struct fio_skeleton_options *o = td->eo;
 	int ret = 0;
+	if (o->op_type == NFS_STAT_MKDIR_RMDIR) {
+		if (td->o.td_ddir == TD_DDIR_TRIM) {
+			ret = nfs_rmdir(o->context, f->file_name);
+			if (ret != 0) {
+				FAIL("Failed to rmdir: %s\n", nfs_get_error(o->context));
+			}
+		}
+	}
 	if (o->nfsfh) {
 		ret = nfs_close(o->context, o->nfsfh);
 		ret = generic_close_file(td, f);

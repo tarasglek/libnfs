@@ -1,0 +1,8 @@
+; export NUM_JOBS=400; fio fb-fill.fio -o report.fill.$BLOCK_SIZE
+[stat_mkdir_rmdir-1]
+ioengine=external:.libs/libnfsclient-async.so
+bs=1
+rw=write
+size=50K
+numjobs=${NUM_JOBS}
+iodepth=2
