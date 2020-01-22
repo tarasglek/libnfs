@@ -367,7 +367,7 @@ static int fio_skeleton_setup(struct thread_data *td)
 {
 
 	DEBUG_PRINT("fio_skeleton_setup td=%p eo=%p \n", td, td->eo);
-	td->o.use_thread = 1;
+	td->o.use_thread = 0;
 	return 0;
 }
 /*
