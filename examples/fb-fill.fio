@@ -1,0 +1,7 @@
+; NUM_JOBS=400 BLOCK_SIZE=512K fio fb-fill.fio -o report.fill.$BLOCK_SIZE
+[file]
+ioengine=external:.libs/libnfsclient-async.so
+bs=${BLOCK_SIZE}
+rw=write
+size=100M
+numjobs=${NUM_JOBS}
