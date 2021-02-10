@@ -655,7 +655,7 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
 			portOfs = (portOfs + 1) % portCount;
 
 			/* skip well-known ports */
-			if (!getservbyport(port, "tcp")) {
+			if (1) {
 				memset(&ss, 0, sizeof(ss));
 
 				switch (s->ss_family) {
